@@ -25,7 +25,6 @@ GOOGLE_SCRIPT_URL = os.environ.get(
 client_gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 messages_traites = set()
 
-# Suivi live du jour côté serveur (sécurisé même si la date Sheet décale)
 caisse_live = {
     "date": datetime.now().strftime("%Y-%m-%d"),
     "total_jour": 0,
@@ -134,11 +133,38 @@ RÈGLES :
     envoyer_whatsapp_texte(expediteur, formater_bilan_patron(donnees))
 
 
+MANIFEST_JSON = json.dumps({
+    "name": "OKLMZER GAME Caisse",
+    "short_name": "OKLMZER",
+    "start_url": "/caisse",
+    "display": "standalone",
+    "background_color": "#0F172A",
+    "theme_color": "#EA580C",
+    "icons": [
+        {
+            "src": "/icon.svg",
+            "sizes": "any",
+            "type": "image/svg+xml"
+        }
+    ]
+})
+
+ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <rect width="100" height="100" rx="22" fill="#0F172A"/>
+  <rect x="8" y="8" width="84" height="84" rx="16" fill="none" stroke="#EA580C" stroke-width="5"/>
+  <text x="50" y="60" font-size="44" font-family="Arial, sans-serif" font-weight="bold" fill="#FFFFFF" text-anchor="middle">OG</text>
+</svg>"""
+
+
 HTML_CAISSE = """<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#EA580C" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
   <title>Mini-Caisse — OKLMZER GAME</title>
   <style>
     * { box-sizing: border-box; font-family: Arial, sans-serif; }
@@ -180,7 +206,6 @@ HTML_CAISSE = """<!DOCTYPE html>
     .stock-badge { font-size: 12px; color: #CBD5E1; }
     .stock-low { color: #FCA5A5; font-weight: bold; }
 
-    /* Ticket Client */
     .ticket-box {
       background: #1E293B; border: 2px solid #EA580C; border-radius: 14px; padding: 14px;
       position: sticky; top: 14px;
@@ -201,7 +226,6 @@ HTML_CAISSE = """<!DOCTYPE html>
     .btn-valider { background: #16A34A; width: 100%; padding: 14px; font-size: 15px; }
     .btn-vider { background: #DC2626; padding: 5px 10px; font-size: 12px; }
 
-    /* Fenêtre Patron cachée */
     .modal-bg {
       display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75);
       z-index: 1000; justify-content: center; align-items: center; padding: 16px;
@@ -227,7 +251,7 @@ HTML_CAISSE = """<!DOCTYPE html>
   <div class="header">
     <div>
       <div class="title">🎮 OKLMZER GAME — Gbadago</div>
-      <div class="sub">Caisse Client Tactile</div>
+      <div class="sub">Caisse Client Tactile • Sauvegarde anti-coupure active</div>
     </div>
     <button class="btn-patron" onclick="ouvrirMenuPatron()">🔒 Espace Patron</button>
   </div>
@@ -312,7 +336,6 @@ HTML_CAISSE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Menu caché Patron / Gérant -->
   <div class="modal-bg" id="modal-patron">
     <div class="modal">
       <div class="card-title" style="font-size:17px;">
@@ -348,9 +371,15 @@ HTML_CAISSE = """<!DOCTYPE html>
   <div id="toast">Enregistré ✅</div>
 
   <script>
-    var panier = [];
-    var timers = {};
-    var timersAttente = [];
+    var panier = JSON.parse(localStorage.getItem("oklmzer_panier") || "[]");
+    var timersAttente = JSON.parse(localStorage.getItem("oklmzer_timers_att") || "[]");
+    var timersFin = JSON.parse(localStorage.getItem("oklmzer_timers_fin") || "{}");
+    var timersIntervals = {};
+
+    function sauverPanier() {
+      localStorage.setItem("oklmzer_panier", JSON.stringify(panier));
+      localStorage.setItem("oklmzer_timers_att", JSON.stringify(timersAttente));
+    }
 
     function showToast(txt) {
       var t = document.getElementById("toast");
@@ -368,28 +397,46 @@ HTML_CAISSE = """<!DOCTYPE html>
       } catch(e) {}
     }
 
-    function demarrerTimer(timerId, minutes) {
-      if (timers[timerId]) clearInterval(timers[timerId]);
-      var sec = minutes * 60;
+    function lancerBoucleTimer(timerId) {
+      if (timersIntervals[timerId]) clearInterval(timersIntervals[timerId]);
       var el = document.getElementById(timerId);
-      el.classList.remove("done");
-      timers[timerId] = setInterval(function() {
-        sec--;
+      function tick() {
+        var fin = timersFin[timerId];
+        if (!fin) { el.innerText = "00:00"; el.classList.remove("done"); return; }
+        var sec = Math.floor((fin - Date.now()) / 1000);
         if (sec <= 0) {
-          clearInterval(timers[timerId]);
+          clearInterval(timersIntervals[timerId]);
           el.innerText = "FINI!";
           el.classList.add("done");
+          delete timersFin[timerId];
+          localStorage.setItem("oklmzer_timers_fin", JSON.stringify(timersFin));
           bipFin();
           return;
         }
+        el.classList.remove("done");
         var m = Math.floor(sec / 60), s = sec % 60;
         el.innerText = (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
-      }, 1000);
+      }
+      tick();
+      timersIntervals[timerId] = setInterval(tick, 1000);
+    }
+
+    function demarrerTimer(timerId, minutes) {
+      timersFin[timerId] = Date.now() + minutes * 60000;
+      localStorage.setItem("oklmzer_timers_fin", JSON.stringify(timersFin));
+      lancerBoucleTimer(timerId);
+    }
+
+    function restaurerTimers() {
+      Object.keys(timersFin).forEach(function(id) {
+        lancerBoucleTimer(id);
+      });
     }
 
     function ajouterJeu(code, cat, article, prix, timerId, minutes) {
       ajouterPanier(code, cat, article, prix);
       timersAttente.push({ timerId: timerId, minutes: minutes });
+      sauverPanier();
     }
 
     function ajouterPanier(code, categorie, article, prix) {
@@ -399,18 +446,21 @@ HTML_CAISSE = """<!DOCTYPE html>
       } else {
         panier.push({ code: code, categorie: categorie, article: article, prix: prix, quantite: 1 });
       }
+      sauverPanier();
       afficherPanier();
     }
 
     function changerQte(index, delta) {
       panier[index].quantite += delta;
       if (panier[index].quantite <= 0) panier.splice(index, 1);
+      sauverPanier();
       afficherPanier();
     }
 
     function viderPanier() {
       panier = [];
       timersAttente = [];
+      sauverPanier();
       afficherPanier();
     }
 
@@ -516,6 +566,8 @@ HTML_CAISSE = """<!DOCTYPE html>
       showToast("Bilan envoyé sur WhatsApp ✅");
     }
 
+    afficherPanier();
+    restaurerTimers();
     chargerEtat();
   </script>
 </body>
@@ -531,6 +583,20 @@ class OklmzerHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
             self.wfile.write(HTML_CAISSE.encode("utf-8"))
+            return
+
+        if parsed.path == "/manifest.json":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/manifest+json")
+            self.end_headers()
+            self.wfile.write(MANIFEST_JSON.encode("utf-8"))
+            return
+
+        if parsed.path == "/icon.svg":
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.end_headers()
+            self.wfile.write(ICON_SVG.encode("utf-8"))
             return
 
         if parsed.path == "/api/etat":
